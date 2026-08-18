@@ -1,0 +1,11 @@
+flask
+APScheduler
+requests
+pandas
+numpy
+scikit-learn
+joblib
+python-dotenv
+google-genai
+gunicorn
+werkzeug

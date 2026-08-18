@@ -1,0 +1,21 @@
+# Secrets
+.env
+*.env
+secrets.json
+
+# Database (local reading/prediction log)
+ac_readings.db
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Ignore deployment artifacts
+gunicorn.pid
+
+# OS
+.DS_Store
+Thumbs.db
