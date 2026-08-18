@@ -86,6 +86,7 @@ value) — duplicate readings are skipped rather than logged/predicted.
 Note: the chatbot intentionally sends compact aggregates (7-day counts, min/max/avg, last alert across full history, and real-vs-seed counts) rather than a full row-by-row dump, so responses stay prompt-efficient and focused on actionable summaries.
 | `app.py` | Flask routes + APScheduler polling job + registers `chatbot_bp` |
 | `templates/dashboard.html` | Live status card + history charts + CSV export button |
+| `templates/login.html` | Login form — the only route reachable without a session (see Authentication below) |
 | `test_alerts.py` | Standalone script: feeds an extreme reading through `predict_status()`, confirms `CRITICAL`, exercises `notifier.py` |
 | `.gitignore` | Excludes `ac_readings.db`, `.env`/secrets, Python/venv cruft |
 | `.env.example` | Template listing every env var this project reads, placeholders only — copy to `.env` and fill in real values |
@@ -100,11 +101,30 @@ Note: the chatbot intentionally sends compact aggregates (7-day counts, min/max/
 
 ### Notable routes (`app.py`)
 
+Every route below requires a logged-in session except `/login` itself — see
+Authentication below.
+
+- `GET/POST /login` — login form; POST checks `ADMIN_USERNAME`/`ADMIN_PASSWORD`
+  and starts the session
+- `GET /logout` — clears the session, redirects to `/login`
 - `GET /` — dashboard page
 - `GET /api/current` — latest logged reading, JSON
 - `GET /api/history` — last 7 days, JSON (feeds the charts)
 - `GET /api/download-csv` — full logged history as a CSV download (our
   predictions + `device_status`, not a raw ThingSpeak pull)
+
+### Authentication
+
+The whole app — the dashboard and every `/api/*` endpoint, including the
+chatbot blueprint's `/api/chat` — sits behind one shared login, enforced by
+an `app.before_request` hook in `app.py` (not per-route decorators, so any
+new route or blueprint is protected by default rather than by opt-in). An
+unauthenticated request to a page route gets redirected to `/login?next=...`;
+to an `/api/*` route it gets a 401 JSON error instead (a redirect would just
+hand HTML to a `fetch()` call). `/login` checks the submitted credentials
+against `ADMIN_USERNAME`/`ADMIN_PASSWORD` and sets `session["logged_in"]`;
+`/logout` clears it. There's a single shared admin account — no per-user
+accounts or roles.
 
 ### Alerting
 
@@ -131,6 +151,10 @@ set:
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
 - `GEMINI_API_KEY` for `chatbot.py` — the app **starts fine without it**;
   `/api/chat` returns a 503 "chatbot not configured" error until it's set
+- `SECRET_KEY`, `ADMIN_USERNAME`, `ADMIN_PASSWORD` — gate the whole app
+  behind a login page (see Authentication above). Unlike the vars above,
+  **the app refuses to start at all** (raises `RuntimeError`) if any of
+  these three are unset — there's no unauthenticated fallback mode.
 
 All of the above are loaded from a `.env` file (via `python-dotenv`) if
 present. Copy `.env.example` to `.env` and fill in real values — `.env` is

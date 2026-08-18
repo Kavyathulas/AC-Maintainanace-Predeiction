@@ -9,8 +9,11 @@ Required environment variables (set these in Render service settings):
 - `TELEGRAM_BOT_TOKEN` — Telegram bot token (optional; if unset notifier prints)
 - `TELEGRAM_CHAT_ID` — Telegram chat id (optional)
 - `GEMINI_API_KEY` — Gemini API key for chatbot (optional; `/api/chat` returns 503 if unset)
-- `SECRET_KEY` — Flask secret key (recommended for production sessions)
-- `ADMIN_USERNAME` and `ADMIN_PASSWORD` — optional admin credentials if you add admin tooling later
+- `SECRET_KEY` — Flask session signing key. **Required** — the app now
+  gates every route behind a login page and refuses to start without it.
+- `ADMIN_USERNAME` and `ADMIN_PASSWORD` — the one shared login for the
+  dashboard/API. **Required** — same as above, the app won't start
+  without them.
 
 Build command:
 ```

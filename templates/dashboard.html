@@ -75,10 +75,17 @@
     margin: 0 auto;
     padding: 24px 16px 64px;
   }
+  .page-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 16px;
+  }
   h1 {
     font-size: 1.25rem;
     font-weight: 600;
-    margin: 0 0 16px;
+    margin: 0;
   }
   .updated {
     font-size: 0.8rem;
@@ -337,7 +344,10 @@
 <body>
 <div class="viz-root">
   <div class="page">
-    <h1>AC Maintenance Dashboard</h1>
+    <div class="page-header">
+      <h1>AC Maintenance Dashboard</h1>
+      <a class="table-toggle" href="/logout">Log out</a>
+    </div>
     <div class="updated" id="last-updated">Loading…</div>
     <div class="stale-warning" id="stale-warning" hidden></div>
 

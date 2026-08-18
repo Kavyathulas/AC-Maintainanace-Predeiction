@@ -10,13 +10,15 @@ alert on WARNING/CRITICAL.
 
 import csv
 import io
+import math
 import os
+import sqlite3
 from datetime import datetime, timedelta
 
 import requests
 from apscheduler.schedulers.background import BackgroundScheduler
 from dotenv import load_dotenv
-from flask import Flask, Response, jsonify, render_template
+from flask import Flask, Response, jsonify, redirect, render_template, request, session, url_for
 
 # Must run BEFORE the local imports below — chatbot.py and notifier.py read
 # their API keys from os.environ at module import time (so a missing key can
@@ -42,9 +44,75 @@ app = Flask(__name__)
 app.register_blueprint(chatbot_bp)
 # Load secret/config from environment for production safety (Render will set these)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY")
-# Optional admin credentials (read from env; may be unused if app has no admin UI)
+# Session cookie hardening — HttpOnly is already Flask's default, set
+# explicitly for clarity; SameSite=Lax stops the session cookie being sent
+# on cross-site requests (basic CSRF mitigation) without breaking normal
+# top-level navigation to the dashboard.
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+
+# Admin credentials that gate the whole app (see require_login() below).
+# Login is unusable without all three of these set — fail fast at startup
+# with a clear message rather than letting every request 500 on a missing
+# secret key, or silently accepting a blank/unset password.
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
+if not app.config["SECRET_KEY"] or not ADMIN_USERNAME or not ADMIN_PASSWORD:
+    raise RuntimeError(
+        "SECRET_KEY, ADMIN_USERNAME, and ADMIN_PASSWORD must all be set "
+        "(via .env locally or the platform's env vars in production) — "
+        "the dashboard and API are login-protected and can't function "
+        "without them."
+    )
+
+# Paths reachable without a session — just the login page itself and Flask's
+# built-in static file route (no local /static assets exist yet, but this
+# keeps the exemption correct if any get added later).
+_LOGIN_EXEMPT_PATHS = {"/login"}
+
+
+@app.before_request
+def require_login():
+    """Gate every route — dashboard, all /api/* endpoints (including the
+    chatbot blueprint's /api/chat) — behind a logged-in session.
+
+    A before_request hook rather than a per-route decorator so newly added
+    routes and blueprints are protected by default instead of by opt-in.
+    """
+    if request.path in _LOGIN_EXEMPT_PATHS or request.path.startswith("/static/"):
+        return None
+    if session.get("logged_in"):
+        return None
+    if request.path.startswith("/api/"):
+        return jsonify({"error": "Not authenticated. Please log in."}), 401
+    return redirect(url_for("login", next=request.path))
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    error = None
+    if request.method == "POST":
+        username = request.form.get("username", "")
+        password = request.form.get("password", "")
+        if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
+            session.clear()
+            session["logged_in"] = True
+            # Only ever redirect to a same-site relative path from here —
+            # `next` is user-controlled input, so an absolute/protocol
+            # URL would be an open-redirect vector.
+            next_path = request.form.get("next") or ""
+            if not next_path.startswith("/") or next_path.startswith("//"):
+                next_path = url_for("dashboard")
+            return redirect(next_path)
+        error = "Invalid username or password."
+    return render_template("login.html", error=error, next=request.args.get("next", ""))
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
 
 # In-memory buffer of the last 2 *processed* readings, needed to compute
 # prev1/prev2/trend/roll_mean features exactly like the training notebook.
@@ -84,6 +152,15 @@ def fetch_latest_reading():
         hum = float(latest["field2"])
         vib = float(latest["field3"])
     except (TypeError, KeyError, ValueError):
+        # Missing key, None, or a non-numeric string (float() rejects all 3).
+        return None
+
+    # ThingSpeak sends the literal string "nan" for a field when the sensor
+    # has no valid reading right now (confirmed: happens when the AC unit
+    # is off) — float("nan") parses that successfully into a real NaN
+    # rather than raising, so it slips past the except above. Treat it the
+    # same as a missing reading: no valid data, nothing to log/predict on.
+    if math.isnan(temp) or math.isnan(hum) or math.isnan(vib):
         return None
 
     device_status = latest.get("field4")
@@ -92,11 +169,23 @@ def fetch_latest_reading():
 
 
 def poll_and_process():
-    """APScheduler job: fetch → dedupe → predict → log → notify."""
+    """APScheduler job: fetch → dedupe → predict → log → notify.
+
+    Never lets a bad poll take the scheduler down: fetch_latest_reading()
+    already filters out missing/non-numeric/NaN fields (e.g. ThingSpeak
+    reporting "nan" while the AC is off) by returning None, and the extra
+    check + try/except below are a defensive backstop so an incomplete
+    reading is skipped-and-logged rather than repeat-crashing this job
+    every poll interval if that upstream filtering ever misses a case.
+    """
     global _last_raw_reading, _last_status
 
     reading = fetch_latest_reading()
     if reading is None:
+        return
+
+    if reading["temp"] is None or reading["hum"] is None or reading["vib"] is None:
+        print(f"[poll_and_process] Skipping incomplete reading (missing temp/hum/vib): {reading}")
         return
 
     current = (reading["temp"], reading["hum"], reading["vib"])
@@ -118,14 +207,20 @@ def poll_and_process():
         prev1=prev1, prev2=prev2,
     )
 
-    database.insert_reading(
-        timestamp=datetime.utcnow().isoformat(),
-        temperature=reading["temp"],
-        humidity=reading["hum"],
-        vibration=reading["vib"],
-        status=status,
-        device_status=reading.get("device_status"),
-    )
+    try:
+        database.insert_reading(
+            timestamp=datetime.utcnow().isoformat(),
+            temperature=reading["temp"],
+            humidity=reading["hum"],
+            vibration=reading["vib"],
+            status=status,
+            device_status=reading.get("device_status"),
+        )
+    except sqlite3.IntegrityError as e:
+        # Defensive backstop — log and move on instead of letting a bad row
+        # kill this job and repeat-crash every poll interval.
+        print(f"[poll_and_process] Skipping reading that failed to insert ({e}): {reading}")
+        return
 
     # Only alert on a *change* of status, so it doesn't re-notify every
     # 30s while the AC sits at WARNING/CRITICAL.
