@@ -12,7 +12,6 @@ import csv
 import io
 import math
 import os
-import sqlite3
 from datetime import datetime, timedelta
 
 import requests
@@ -216,7 +215,7 @@ def poll_and_process():
             status=status,
             device_status=reading.get("device_status"),
         )
-    except sqlite3.IntegrityError as e:
+    except database.IntegrityError as e:
         # Defensive backstop — log and move on instead of letting a bad row
         # kill this job and repeat-crash every poll interval.
         print(f"[poll_and_process] Skipping reading that failed to insert ({e}): {reading}")
@@ -314,11 +313,27 @@ def start_scheduler():
     return scheduler
 
 
+# Run on import — not just inside `if __name__ == "__main__"` below — so
+# both `python app.py` (local dev) and `gunicorn app:app` (Render, per
+# Procfile) are guaranteed to create the table and start the poller.
+# gunicorn imports this module and calls the `app` WSGI object directly;
+# it never executes the __main__ block, which used to be the only place
+# these two ran. On a fresh Render deploy that meant the readings table
+# was never created (sqlite3.OperationalError: no such table: readings)
+# and the ThingSpeak poller never started at all.
+#
+# Safe to call exactly once per process — the Procfile pins
+# `--workers 1` so exactly one gunicorn worker (and therefore one
+# scheduler) exists. Raising the worker count without moving the
+# scheduler to a separate process would start one poller per worker and
+# duplicate every insert/Telegram alert.
+database.init_db()
+start_scheduler()
+
+
 if __name__ == "__main__":
-    database.init_db()
-    start_scheduler()
-    # use_reloader=False: Flask's debug reloader runs the module twice in
-    # two processes, which would start the scheduler (and double-poll
-    # ThingSpeak) twice too.
+    # use_reloader=False: Flask's debug reloader would otherwise import
+    # this module twice in two processes, running init_db()/
+    # start_scheduler() above (and double-polling ThingSpeak) twice too.
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=True, use_reloader=False)
