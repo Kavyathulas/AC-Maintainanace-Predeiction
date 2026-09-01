@@ -1,87 +1,80 @@
-# Deployment to Render
+# Running AC Maintenance Prediction
 
-This project can be hosted on Render using the following setup. These are
-code-only instructions; deploy through Render's web dashboard.
+## Why not Render
 
-Required environment variables (set these in Render service settings):
-- `THINGSPEAK_CHANNEL_ID` — ThingSpeak channel id
-- `THINGSPEAK_READ_API_KEY` — ThingSpeak read API key
-- `TELEGRAM_BOT_TOKEN` — Telegram bot token (optional; if unset notifier prints)
-- `TELEGRAM_CHAT_ID` — Telegram chat id (optional)
-- `GEMINI_API_KEY` — Gemini API key for chatbot (optional; `/api/chat` returns 503 if unset)
-- `SECRET_KEY` — Flask session signing key. **Required** — the app now
-  gates every route behind a login page and refuses to start without it.
-- `ADMIN_USERNAME` and `ADMIN_PASSWORD` — the one shared login for the
-  dashboard/API. **Required** — same as above, the app won't start
-  without them.
-- `DATABASE_URL` — PostgreSQL connection string. **Optional but strongly
-  recommended on Render** — see "Persistent storage" below. Render sets
-  this automatically once you create a Postgres database and link it to
-  this web service. Unset = falls back to the local SQLite file, which
-  Render wipes on every redeploy.
+Render was the first deployment target, but its free web service tier
+spins the whole process down after ~15 minutes with no inbound HTTP
+traffic (and only wakes back up on the next request). That's incompatible
+with this project's core requirement: `app.py` runs an in-process
+APScheduler job that polls ThingSpeak every 30 seconds and needs to keep
+running continuously, whether or not anyone is looking at the dashboard.
+On Render's free tier the background poller would go dark every time the
+service spun down between visitors — real sensor readings would simply
+never get logged during those gaps.
 
-Build command:
+(Along the way we also fixed two genuine platform-interaction bugs in this
+codebase — the readings table never being created under gunicorn, and the
+scheduler never starting under gunicorn either — but the spin-down
+behavior itself is a hard limit of Render's free tier, not something
+fixable from here. Upgrading to a paid Render instance would remove the
+spin-down, but for a college project, running locally is simpler and free.)
+
+So: run it locally, with an optional ngrok tunnel for the times a public
+link is actually needed.
+
+## Running locally
+
+This project runs inside **WSL2 (Ubuntu)** — see the Environment note in
+`CLAUDE.md` for why (Windows Smart App Control blocks the compiled DLLs in
+the numpy/pandas/scikit-learn wheels on native Windows).
+
+```bash
+wsl
+cd ~/ac-maintain
+source .venv/bin/activate
+cd "/mnt/c/Users/Kavya Thulasidharan/Downloads/AC Maintain"
+python app.py
 ```
-pip install -r requirements.txt
-```
 
-Start command (Render web service):
-```
-gunicorn app:app --workers 1
-```
+This starts the Flask dev server on port 5000, creates `ac_readings.db` if
+it doesn't already exist, and starts the 30-second ThingSpeak poller in
+the same process. Leave this terminal running — closing it (or Ctrl+C)
+stops both the web server and the poller.
 
-Notes:
-- `database.init_db()` and the background poller (`APScheduler` job) both run
-  at module import time in `app.py`, not inside `if __name__ == "__main__"` —
-  so they run under both `python app.py` (local dev) and `gunicorn app:app`
-  (Render). This matters because gunicorn imports the module and calls the
-  `app` WSGI object directly; it never executes the `__main__` block, so
-  anything that only lived there (as both of these originally did) silently
-  never ran on Render — including table creation, which is why a fresh
-  deploy could hit `sqlite3.OperationalError: no such table: readings`.
-- The Procfile pins `gunicorn app:app --workers 1` deliberately — the
-  scheduler starts once per worker process, so more than 1 worker means
-  more than one poller hitting ThingSpeak and duplicate DB inserts/Telegram
-  alerts every interval. Don't raise `--workers` without first moving the
-  scheduler to a separate process (e.g. a Render background worker).
+Open `http://localhost:5000` in a browser and log in with the
+`ADMIN_USERNAME`/`ADMIN_PASSWORD` from `.env`.
 
-- The `/api/download-csv` endpoint always includes seeded/demo rows; the
-  dashboard and `/api/history` exclude seeded rows by default.
+## Sharing a public link with ngrok
 
-- Ensure you do NOT commit `.env`, `ac_readings.db`, or `.venv` to the repo.
+To let someone else reach your locally-running instance:
 
-## Persistent storage: SQLite locally, PostgreSQL on Render
+1. [Install ngrok](https://ngrok.com/download) (one-time), and authenticate
+   it with your ngrok account token if you haven't already
+   (`ngrok config add-authtoken <token>`).
+2. With `app.py` already running (see above), open a **second** terminal
+   and run:
+   ```bash
+   ngrok http 5000
+   ```
+3. ngrok prints a forwarding URL that looks like
+   `https://xxxx-xx-xx-xxx-xx.ngrok-free.app` — share that. It proxies
+   straight through to your local Flask process, so the login page,
+   dashboard, charts, and chatbot all work exactly as they do at
+   `localhost:5000`.
 
-Render's filesystem is ephemeral — anything written to disk (including the
-`ac_readings.db` SQLite file) is wiped on every redeploy. `database.py`
-auto-detects a `DATABASE_URL` env var and switches from SQLite to
-PostgreSQL when it's set, with identical behavior either way — locally,
-where `DATABASE_URL` is never set, nothing changes.
+**Both `python app.py` and `ngrok http 5000` need to stay running**, in
+their own terminals, for the link to keep working — closing either one
+breaks it. The ngrok URL also isn't stable on the free plan: every time
+you restart ngrok it generates a **new** random URL, so you'll need to
+re-share the link after any restart.
 
-To set this up:
+## Environment variables
 
-1. In the Render dashboard: **New +** → **PostgreSQL**. Pick the Free
-   plan. Give it a name (e.g. `ac-maintain-db`) and create it.
-2. Open your **web service** → **Environment** tab → **Add Environment
-   Variable**. Render offers a way to link a variable to a database's
-   connection string directly (rather than pasting it by hand) — use that
-   to set `DATABASE_URL` to this database's **Internal Database URL**
-   (same-region traffic, no SSL required, lower latency than the External
-   URL). If your Render UI doesn't offer that picker, copy the Internal
-   Database URL from the Postgres instance's **Info** page and paste it in
-   manually.
-3. Redeploy the web service so it picks up the new env var. On next boot,
-   `database.init_db()` (which now runs at import time — see the note
-   above about gunicorn) creates the `readings` table in Postgres
-   automatically, same as it would for a fresh SQLite file.
-
-**Know the free-tier limit:** Render's free PostgreSQL databases expire
-30 days after creation, with a 14-day grace period to upgrade before
-Render deletes the database and all its data. This still solves the
-original problem (data surviving a *redeploy*), but not indefinitely on
-the free plan — either upgrade to a paid instance before the 30-day mark,
-or budget for recreating the free database periodically (you'd lose
-history at that point, same as today). See Render's docs/changelog for
-current specifics.
-
-*** End of file
+Same `.env` file as always — see `.env.example` for the full list, and
+`CLAUDE.md`'s "Config still needed" section for which are required vs.
+optional. Nothing about running locally + ngrok changes what belongs in
+`.env`. `DATABASE_URL` in particular should stay unset: `database.py`
+auto-detects it, and with it unset keeps using the local `ac_readings.db`
+SQLite file (see that file's module docstring — the PostgreSQL support
+built for the Render attempt is still there but sits inert unless
+`DATABASE_URL` is set).

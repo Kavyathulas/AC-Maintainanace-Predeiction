@@ -142,6 +142,21 @@ instead, in a venv at `~/ac-maintain/.venv`, reading/writing this project
 folder via `/mnt/c/Users/Kavya Thulasidharan/Downloads/AC Maintain`. No
 Windows security settings were changed to work around this.
 
+## Deployment
+
+Runs locally (`python app.py` inside the WSL2 venv — see Environment note
+above), with an optional [ngrok](https://ngrok.com) tunnel for a shareable
+public link. See `DEPLOYMENT.md` for the exact commands.
+
+Render was tried first and abandoned: its free web service tier spins the
+whole process down after ~15 minutes with no inbound HTTP traffic, which
+kills the in-process APScheduler thread along with it — incompatible with
+this project's requirement of a continuous 30s background poll regardless
+of whether anyone's viewing the dashboard. `database.py`'s PostgreSQL
+support (via `DATABASE_URL`) is left in place from that attempt — harmless
+locally since `DATABASE_URL` is never set there, so it just keeps using
+SQLite as before.
+
 ## Config still needed (see checklist at the end of the relevant phase)
 
 `app.py` and `notifier.py` read these from environment variables with
