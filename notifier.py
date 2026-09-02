@@ -8,8 +8,8 @@ import os
 
 import requests
 
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8863389260:AAF4GR2K-RlMzlRfGchTJ4B4FM3YBcetqZA")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "1180262898")
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "YOUR_CHAT_ID")
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
 
 # Same cut points the training labels were generated from (see CLAUDE.md) —
